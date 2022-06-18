@@ -9,7 +9,11 @@ def pad_array(ary: np.array, max_dim: tuple):
     for i in range(len(ary.shape)):
         dif = max_dim[i] - ary.shape[i]
         if dif % 2 == 0:
-            padding.append([dif / 2, dif / 2])
+            padding.append((dif // 2, dif // 2))
         else:
-            padding.append([dif // 2 + 1, dif // 2])
+            padding.append((dif // 2 + 1, dif // 2))
+
+    padding = tuple(padding)
+    print(padding)
+    print(ary)
     return np.pad(ary, padding)
