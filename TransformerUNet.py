@@ -545,8 +545,8 @@ class UNetViT(nn.Module):
         self.up = nn.ModuleList(
             [
                 Block(
-                    dim=self.dims[i] ** 2 * chan_list[i+1] // self.n_patches_up,
-                    n_heads=chan_list[i+1],
+                    dim=self.dims[i] ** 2 * chan_list[i + 1] // self.n_patches_up,
+                    n_heads=chan_list[i + 1],
                     mlp_ratio=mlp_ratio,
                     qkv_bias=qkv_bias,
                     n_layers=n_layers,
@@ -574,7 +574,23 @@ class UNetViT(nn.Module):
                 for i in range(len(chan_list) - 1, 1, -1)
             ]
         )
-
+        self.bottleneck_dim = img_size // 2 ** 4
+        self.bottleneck_patch_embed = PatchEmbed(
+            img_size=self.bottleneck_dim,
+            patch_size=self.bottleneck_dim // self.n_patches_up ** .5,
+            in_chans=chan_list[-2],
+            embed_dim=self.bottleneck_dim ** 2 * chan_list[-2] // self.n_patches_dow
+        )
+        self.bottleneck_conv = Block(
+            dim=self.bottleneck_dim ** 2 * chan_list[-2] // self.n_patches_down,
+            n_heads=chan_list[-2],
+            mlp_ratio=mlp_ratio,
+            qkv_bias=qkv_bias,
+            n_layers=n_layers,
+            p=p,
+            attn_p=attn_p,
+        )
+        self.last_convolution = nn.Conv2d(chan_list[1], 1,)
     def inverse_patch(self, x: torch.Tensor, n_chans) -> torch.Tensor:
         """
 
@@ -620,14 +636,19 @@ class UNetViT(nn.Module):
             x = self.max_pool(x)  # (n_samples, n_chans, (H - 1) / 2, (W - 1) / 2)
 
         # Bottleneck
-        x = self.bottle_neck(x)
+        x = self.bottleneck_patch_embed(x) + self.bottleneck_pos_embed
+        x = self.bottleneck_conv(x)
+        x = self.inverse_patch(x, self.chan_list[-2])
+        x = self.down_conv[-1](x)
         skip_connections.reverse()
-        self.pos_emb.reverse()
-        for i, skip_connection in enumerate():
+
+        # Decode
+        for i, skip_connection in enumerate(skip_connections):
             x = self.convtranspose2d[i](x)
-            x = torch.cat([x,skip_connection], dim=1) # (n_samples, n_chans * 2, H, W)
+            x = torch.cat([x, skip_connection], dim=1)  # (n_samples, n_chans * 2, H, W)
             x = self.up_patch_embed[len(skip_connections) - i - 1](x) + self.pos_emb_up[i]
-            x = self.up(x) # (n_samples, n_patches * 2
+            x = self.up(x)  # (n_samples, n_patches * 2
             x = self.inverse_patch(x)
             x = self.up_conv[i](x)
 
+        return self.last_convolution(x)
