@@ -590,7 +590,8 @@ class UNetViT(nn.Module):
             p=p,
             attn_p=attn_p,
         )
-        self.last_convolution = nn.Conv2d(chan_list[1], 1,)
+        self.last_convolution = nn.Conv2d(chan_list[1], 1, )
+
     def inverse_patch(self, x: torch.Tensor, n_chans) -> torch.Tensor:
         """
 
