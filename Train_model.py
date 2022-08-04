@@ -6,6 +6,7 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import matplotlib.figure as figure
 
+import tqdm
 import datetime as dt
 import numpy as np
 from Config import *
@@ -27,12 +28,15 @@ def train_loop(model: nn.Module, train_dataloader: DataLoader, optim: torch.opti
     """
     total_loss = 0
     model.train()
-    for data in train_dataloader:
-        X, y = data[0], data[1]
+    loop = tqdm(train_dataloader)
+    for batch_idx, (X, y) in enumerate(loop):
+        X = X.to(device=DEVICE)
+        y = y.float().unsqueeze(1).to(device=DEVICE)
 
-        pred = model(X)
+        with torch.cuda.amp.autocast():
+            pred = model(X)
 
-        loss = loss_eq(pred, y)
+            loss = loss_eq(pred, y)
 
         optim.zero_grad()
         loss.backward()
@@ -40,6 +44,7 @@ def train_loop(model: nn.Module, train_dataloader: DataLoader, optim: torch.opti
 
         total_loss += loss.detach().item()
 
+        loop.set_postfix(loss=loss.detach().item())
     return total_loss / len(train_dataloader)
 
 

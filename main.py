@@ -4,7 +4,9 @@ import TransformerUNet
 import Train_model
 import torch.optim as optim
 import torch.nn.modules.loss as loss
-import torchvision.transforms as T
+
+import albumentations as A
+from albumentations.pytorch import ToTensorV2
 from Config import *
 import CropVolumes
 
@@ -18,21 +20,15 @@ LABEL_URL = ""
 def clean():
     labels = os.listdir(LABEL_URL + "/Raw")
     data = os.listdir(DATA_URL + "/Raw")
-    transform = T.Compose([
-        T.Resize(img_size),
-        T.RandomRotation([0, 360]),
-        T.RandomVerticalFlip(.2),
-
-    ])
 
 
-def fit_model():
+def get_inputs():
     model = input(
         "Please select the parameters of the model in the following order separated my commas enter nothing if using "
         "default params: \nImage size, \nn_patches_down, \nn_patches_up,\nchan_list,\nmlp_ratio,\nqkv_bias,"
         "\nn_layers,\ndropout, \nattn_dropout")
     model = model.split(", ")
-    img_size_local, n_patches_down, n_patches_up, chan_list, mlp_ratio, qkv_bias,n_layers, p, attn_p = model
+    img_size_local, n_patches_down, n_patches_up, chan_list, mlp_ratio, qkv_bias, n_layers, p, attn_p = model
     img_size_local = int(img_size_local)
     n_patches_down = int(n_patches_down)
     n_patches_up = int(n_patches_up)
@@ -42,32 +38,54 @@ def fit_model():
     n_layers = int(n_layers)
     p = float(p)
     attn_p = float(attn_p)
+    epochs = int(input("How many epochs to train for"))
+
+    return {"image_size": img_size_local,
+            'n_patches_down': n_patches_down,
+            'n_patches_up': n_patches_up,
+            "chan_list":chan_list,
+            "mlp_ratio": mlp_ratio,
+            "qkv_bias":qkv_bias,
+            "n_layers":n_layers,
+            "p":p,
+            "attn_p":attn_p}, epochs
+
+
+def fit_model():
+    model_params, epochs = get_inputs()
     model = TransformerUNet.UNetViT(
-        img_size=img_size_local,
-        n_patches_down=n_patches_down,
-        n_patches_up=n_patches_up,
-        chan_list=chan_list,
-        mlp_ratio=mlp_ratio,
-        qkv_bias=qkv_bias,
-        n_layers=n_layers,
-        p=p,
-        attn_p=attn_p
+        *model_params
     )
     opt = input("What optimizer shall be used")
     if opt.lower() == "adam":
         opt = optim.Adam(model.parameters(), lr=.0001)
     else:
-        opt = optim.SGD(model.parameters(),lr=.0001)
+        opt = optim.SGD(model.parameters(), lr=.0001)
 
     loss_eq = loss.BCELoss()
     data = [data for data in os.listdir(DATA_URL + "/clean")]
     labels = [label for label in os.listdir(LABEL_URL + "/clean")]
 
-    train_X, train_y, test_X, test_y = train_test_split(data, labels, test_size=0.1)
-    train_dataloader = DataLoader.ImageDataLoader(train_y, train_X)
-    val_dataloader = DataLoader.ImageDataLoader(test_y, test_X)
+    train_transform = A.Compose([
+        A.Resize(img_size),
+        A.Rotate(limit=35, p=1),
+        A.VerticalFlip(p=.2),
+        A.HorizontalFlip(p=0.5),
+        A.Normalize(
+            mean=[0.0, 0.0, 0.0],
+            std=[1.0, 1.0, 1.0],
+            max_pixel_value=255.0
+        ),
+        ToTensorV2()
+    ])
+    val_transform = A.Compose([
+        A.Resize(img_size)
+    ])
 
-    epochs = int(input("How many epochs to train for"))
+    train_X, train_y, test_X, test_y = train_test_split(data, labels, test_size=0.1)
+    train_dataloader = Dataset.ImageDataLoader(train_y, train_X, transforms=train_transform)
+    val_dataloader = Dataset.ImageDataLoader(test_y, test_X, transforms=val_transform)
+
     Train_model.fit(model, opt, loss_eq, train_dataloader, val_dataloader, epochs)
 
 
