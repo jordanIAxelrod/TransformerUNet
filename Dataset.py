@@ -1,6 +1,7 @@
 import os
 from PIL import Image
-from numpy import asarray
+import numpy as np
+
 
 import torch
 from torch.utils.data import Dataset
@@ -20,13 +21,13 @@ class ImageDataLoader(Dataset):
         the folder where the cleaned images are stored
     """
 
-    def __init__(self, label_url, data_url):
+    def __init__(self, label_dir, data_dir, transforms=None):
         # Enumerate the labels and images in a list
         # Sort them so the idx of each are the same
-        self.labels = [label for label in os.listdir(label_url)]
-        self.labels.sort(key=get_number)
-        self.data = [data for data in os.listdir(data_url)]
-        self.data.sort(key=get_number)
+        self.label_dir = label_dir
+        self.data_dir = data_dir
+        self.data = os.listdir(data_dir)
+        self.transforms = transforms
 
     def __len__(self):
         """
@@ -43,10 +44,16 @@ class ImageDataLoader(Dataset):
         :return: tuple
             tensor of masks and data
         """
+
         img = self.data[idx]
-        msk = self.labels[idx]
+        img = os.path.join(self.data_dir, img)
+        msk = os.path.join(self.label_dir, img.replace(".jpg", "_mask.jgp"))
 
-        img = asarray(Image.open(img))
-        msk = asarray(Image.open(msk))
-
+        img = np.array(Image.open(img).convert("RBG"))
+        msk = np.array(Image.open(msk).convert("L"), dtype=np.float32)
+        msk[msk == 255.] = 1
+        if self.transforms:
+            augmentations = self.transforms(image=img, mask=msk)
+            img = augmentations["image"]
+            msk = augmentations["mask"]
         return torch.Tensor(img), torch.Tensor(msk)

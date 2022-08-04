@@ -58,17 +58,14 @@ def stack_all_mri(mri_list: list) -> list:
     return [stack_images(ls) for ls in mri_list]
 
 
-
-
-
 def main(folder: str) -> list:
     dim_df = pd.read_excel(r"../Image Dimensions.xlsx")
 
     mri_list, mri_names = read_all_mri(folder, dim_df)
 
-    h, w, d = dim_df['Height'].max(),\
-           dim_df['Width'].max(), \
-           dim_df['Case Name'].apply(lambda x: x[:13]).value_counts()[0]
+    h, w, d = dim_df['Height'].max(), \
+              dim_df['Width'].max(), \
+              dim_df['Case Name'].apply(lambda x: x[:13]).value_counts()[0]
     temp_list = []
     for mri in mri_list:
         temp_list.append(utils.pad_array(mri, (h, w, d)))

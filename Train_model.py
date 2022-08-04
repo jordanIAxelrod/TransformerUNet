@@ -2,14 +2,16 @@ import TransformerUNet
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+
 import matplotlib.pyplot as plt
 import matplotlib.figure as figure
 
 import datetime as dt
 import numpy as np
+from Config import *
 
 
-def train_loop(model: nn.Module, train_dataloader, optim, loss_eq):
+def train_loop(model: nn.Module, train_dataloader: DataLoader, optim: torch.optim, loss_eq: nn.Module):
     """
     Runs the training loop for the epoch
     :param model: nn.Module
@@ -159,6 +161,10 @@ def fit(
             print(f"Validation loss: {val_loss:.4f}")
             plot_loss(train_loss[-1], val_loss[-1], train_line, val_line)
             plt.savefig(url + f"{dt.datetime.now().srtftime(fmt)} Training and Validation Loss.png")
+
+            if all(val > val_loss[-patients - 1] - err for val in val_loss[-patients:]):
+                print("Model has hit early stopping condition")
+                break
         except KeyboardInterrupt as ki:
             time = dt.datetime.now().strftime("%m.%d.%Y")
             torch.save(
