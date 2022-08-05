@@ -38,11 +38,11 @@ class PatchEmbed(nn.Module):
         # no overlap convolutional layer
         assert embed_dim == in_chans * self.patch_size ** 2, \
             f"Embed dim must be {in_chans * self.patch_size ** 2}"
-        self.patch = nn.conv2d(
+        self.patch = nn.Conv2d(
             in_chans,
             embed_dim,
-            kernel_size=patch_size,
-            stride=patch_size
+            kernel_size=int(patch_size),
+            stride=int(patch_size)
         )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -91,6 +91,7 @@ class Attention(nn.Module):
     """
 
     def __init__(self, dim: int, n_heads: int = 12, qkv_bias: bool = True, attn_p: float = 0., proj_p: float = 0.):
+        super(Attention, self).__init__()
         self.n_heads = n_heads
         self.dim = dim
         self.head_dim = dim // n_heads
@@ -183,7 +184,7 @@ class MLP(nn.Module):
             mod_list.append(nn.GELU())
         self.output = nn.Linear(hidden_features, out_features)
         self.drop = nn.Dropout(p)
-        self.mlp = nn.sequential(mod_list)
+        self.mlp = nn.Sequential(*mod_list)
 
     def forward(self, x):
         """
@@ -246,7 +247,7 @@ class Block(nn.Module):
     ):
         super().__init__()
 
-        self.norm1 = nn.LayerNorm(dim, esp=1e-6)
+        self.norm1 = nn.LayerNorm(dim, eps=1e-6)
         self.attn = Attention(
             dim,
             n_heads=n_heads,
@@ -255,7 +256,7 @@ class Block(nn.Module):
             proj_p=p
         )
 
-        self.norm2 = nn.LayerNorm(dim, esp=1e-6)
+        self.norm2 = nn.LayerNorm(dim, eps=1e-6)
         hidden_features = int(dim * mlp_ratio)
         if not out_features:
             out_features = dim
@@ -279,6 +280,40 @@ class Block(nn.Module):
 
         return x
 
+
+class MultiLayerBlock(nn.Module):
+    def __init__(
+            self,
+            depth,
+            dim: int,
+            n_heads: int,
+            mlp_ratio: float = 4.0,
+            qkv_bias: bool = True,
+            n_layers: int = 1,
+            out_features: int = None,
+            p: float = 0.,
+            attn_p: float = .0
+    ):
+        super(MultiLayerBlock, self).__init__()
+        self.blocks = nn.ModuleList([
+            Block(
+                dim,
+                n_heads,
+                mlp_ratio,
+                qkv_bias,
+                n_layers,
+                out_features,
+                p,
+
+                attn_p
+            )
+            for _ in range(depth)
+        ])
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        for block in self.blocks:
+            x = block(x)
+        return x
 
 class ViT(nn.Module):
     """
@@ -368,7 +403,7 @@ class ViT(nn.Module):
             ]
         )
 
-        self.norm = nn.LayerNorm(embed_dim, esp=1e-6)
+        self.norm = nn.LayerNorm(embed_dim, eps=1e-6)
         self.head = nn.Linear(embed_dim, n_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -470,9 +505,10 @@ class UNetViT(nn.Module):
     def __init__(
             self,
             img_size: int = 512,
-            n_patches_down: int = 16,
-            n_patches_up: int = 64,
-            chan_list: list = (3, 16, 32, 64, 128, 256),
+            n_patches_down: int = 64,
+            n_patches_up: int = 256,
+            depth: int = 4,
+            chan_list: list = (3, 2, 4, 8, 16, 32),
             mlp_ratio: float = 4,
             qkv_bias: bool = True,
             n_layers: int = 1,
@@ -481,7 +517,9 @@ class UNetViT(nn.Module):
     ):
         super(UNetViT, self).__init__()
         self.n_patches_down = n_patches_down
+        self.chan_list = chan_list
         self.n_patches_up = n_patches_up
+
         self.dims = [img_size // 2 ** i for i in range(4)]
         self.down_patch_embed = nn.ModuleList(
             [
@@ -499,14 +537,15 @@ class UNetViT(nn.Module):
             nn.Parameter(
                 torch.zeros(1, self.n_patches_down, chan_list[i] * dim ** 2 // self.n_patches_down)
             )
-            for i, dim in enumerate(self.dim)
+            for i, dim in enumerate(self.dims)
         ]
 
         self.pos_drop = nn.Dropout(p=p)
 
         self.down = nn.ModuleList(
             [
-                Block(
+                MultiLayerBlock(
+                    depth=depth,
                     dim=dim ** 2 * chan_list[i] // self.n_patches_down,
                     n_heads=chan_list[i],
                     mlp_ratio=mlp_ratio,
@@ -526,25 +565,32 @@ class UNetViT(nn.Module):
                 for i, chan in enumerate(chan_list[:-1])
             ]
         )
-        self.max_pool = nn.MaxPooling2d(2)
+        self.max_pool = nn.MaxPool2d(2)
 
+        self.pos_emb_up = [
+            nn.Parameter(
+                torch.zeros(1, self.n_patches_up, chan_list[len(chan_list) - 1 - i] * dim ** 2 // self.n_patches_up)
+            )
+            for i, dim in enumerate(reversed(self.dims))
+        ]
         # Patch embedding for the decoder
         self.up_patch_embed = nn.ModuleList(
             [
                 PatchEmbed(
                     img_size=self.dims[i],
                     patch_size=self.dims[i] // self.n_patches_up ** .5,
-                    in_chans=chan_list[i + 1],
-                    embed_dim=chan_list[i + 1] * self.dims[i] ** 2 // self.n_patches_up
+                    in_chans=chan_list[i + 2],
+                    embed_dim=chan_list[i + 2] * self.dims[i] ** 2 // self.n_patches_up
                 )
                 for i in range(len(self.dims) - 1, -1, -1)
             ]
         )
         self.up = nn.ModuleList(
             [
-                Block(
-                    dim=self.dims[i] ** 2 * chan_list[i + 1] // self.n_patches_up,
-                    n_heads=chan_list[i + 1],
+                MultiLayerBlock(
+                    depth=depth,
+                    dim=self.dims[i] ** 2 * chan_list[i + 2] // self.n_patches_up,
+                    n_heads=chan_list[i + 2],
                     mlp_ratio=mlp_ratio,
                     qkv_bias=qkv_bias,
                     n_layers=n_layers,
@@ -575,9 +621,12 @@ class UNetViT(nn.Module):
         self.bottleneck_dim = img_size // 2 ** 4
         self.bottleneck_patch_embed = PatchEmbed(
             img_size=self.bottleneck_dim,
-            patch_size=self.bottleneck_dim // self.n_patches_up ** .5,
+            patch_size=self.bottleneck_dim // self.n_patches_down ** .5,
             in_chans=chan_list[-2],
-            embed_dim=self.bottleneck_dim ** 2 * chan_list[-2] // self.n_patches_dow
+            embed_dim=self.bottleneck_dim ** 2 * chan_list[-2] // self.n_patches_down
+        )
+        self.bottleneck_pos_embed = nn.Parameter(
+            torch.zeros(1, self.n_patches_down, chan_list[-2] * self.bottleneck_dim ** 2 // self.n_patches_down)
         )
         self.bottleneck_conv = Block(
             dim=self.bottleneck_dim ** 2 * chan_list[-2] // self.n_patches_down,
@@ -588,7 +637,7 @@ class UNetViT(nn.Module):
             p=p,
             attn_p=attn_p,
         )
-        self.last_convolution = nn.Conv2d(chan_list[1], 1, )
+        self.last_convolution = nn.Conv2d(chan_list[1], 1, kernel_size=1)
 
     def inverse_patch(self, x: torch.Tensor, n_chans) -> torch.Tensor:
         """
@@ -601,18 +650,19 @@ class UNetViT(nn.Module):
             Shape: `(n_samples, 1, H, W)
         """
         n_samples, n_patches, embed_dim = x.shape
-        patch_size = (embed_dim // n_chans) ** .5
+        patch_size = int((embed_dim // n_chans) ** .5)
         x = x.reshape(-1, n_patches, n_chans, patch_size, patch_size)
-        # (n_samples, n_patches, H, W)
+        # (n_samples, n_patches, C, H, W)
         rows = []
-        for j in n_patches ** .5:
-            z = x[:, j * n_patches: (j + 1) * n_patches]
+        row_dim = int(n_patches ** .5)
+        for j in range(row_dim):
+            z = x[:, j * row_dim: (j + 1) * row_dim]
             rows.append(torch.cat(
                 [z[:, k].reshape(n_samples, n_chans, patch_size, patch_size)
                  for k in range(z.shape[1])],
-                dim=3))
-            # (n_samples, n_patches ** .5, h, w)
-        x = torch.cat(rows, dim=4)
+                dim=2))
+            # (n_samples, n_patches ** .5, c, h, w)
+        x = torch.cat(rows, dim=3)
         return x
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -629,7 +679,7 @@ class UNetViT(nn.Module):
         for i, block in enumerate(self.down):
             x = self.down_patch_embed[i](x) + self.pos_emb_down[i]  # (n_samples, n_patches, dim1)
             x = block(x)  # (n_samples, n_patches, dim1)
-            x = self.inverse_patch(x)  # (n_samples, n_chans, H, W)
+            x = self.inverse_patch(x, self.chan_list[i])  # (n_samples, n_chans, H, W)
             x = self.down_conv[i](x)  # (n_samples, n_chans, H, W)
             skip_connections.append(x)
             x = self.max_pool(x)  # (n_samples, n_chans, (H - 1) / 2, (W - 1) / 2)
@@ -645,9 +695,19 @@ class UNetViT(nn.Module):
         for i, skip_connection in enumerate(skip_connections):
             x = self.convtranspose2d[i](x)
             x = torch.cat([x, skip_connection], dim=1)  # (n_samples, n_chans * 2, H, W)
-            x = self.up_patch_embed[len(skip_connections) - i - 1](x) + self.pos_emb_up[i]
-            x = self.up(x)  # (n_samples, n_patches * 2
-            x = self.inverse_patch(x)
+            x = self.up_patch_embed[i](x) + self.pos_emb_up[i]
+            x = self.up[i](x)  # (n_samples, n_patches * 2
+            x = self.inverse_patch(x, self.chan_list[len(self.chan_list) - 1 - i])
             x = self.up_conv[i](x)
 
         return self.last_convolution(x)
+
+
+print("Create network")
+net = UNetViT(depth=1)
+
+h = torch.randn(1, 3, 512, 512)
+print("Run forward")
+l = net(h)
+
+print(l.shape)
