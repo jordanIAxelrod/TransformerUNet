@@ -15,3 +15,15 @@ PIN_MEMORY = True
 LOAD_MODEL = False
 IMG_DIR = "data/images"
 MSK_DIR = "data/masks"
+NUM_WORKERS = 2
+
+IMG_SIZE = 2048
+N_PATCHES_DOWN = 64
+N_PATCHES_UP = 256
+DEPTH = 4
+QKV_BIAS = True
+N_LAYERS = 1
+P = .1
+ATTN_P = .1
+CHAN_LIST = [3, 2, 4, 8, 16, 32]
+MLP_RATIO = 4

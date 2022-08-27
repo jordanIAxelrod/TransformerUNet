@@ -1,7 +1,8 @@
 import os
+
+import pandas as pd
 from PIL import Image
 import numpy as np
-
 
 import torch
 from torch.utils.data import Dataset
@@ -52,8 +53,40 @@ class ImageDataLoader(Dataset):
         img = np.array(Image.open(img).convert("RBG"))
         msk = np.array(Image.open(msk).convert("L"), dtype=np.float32)
         msk[msk == 255.] = 1
-        if self.transforms:
+        if self.transforms is not None:
             augmentations = self.transforms(image=img, mask=msk)
             img = augmentations["image"]
             msk = augmentations["mask"]
         return torch.Tensor(img), torch.Tensor(msk)
+
+
+class ImagenetClassification(Dataset):
+
+    def __init__(self, data_dir, labels, transform):
+        self.labels = pd.read_csv(
+            labels,
+            sep=" ",
+            names=["Syset", "Names"],
+            usecols=[0, 1]
+        )
+        self.data_dir = data_dir
+        self.data = os.listdir(data_dir)
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, item):
+        img_url = self.data[item]
+        syset = img_url.split("_")[0]
+        label = (self.labels["Syset"] == syset).astype(int).values
+        img = np.array(
+            Image.open(
+                os.path.join(
+                    self.data_dir, img_url
+                )
+            ).convert("RBG")
+        )
+        if self.transform is not None:
+            img = self.transform(img)
+        return torch.Tensor(img), torch.Tensor(label)

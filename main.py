@@ -1,5 +1,8 @@
 import os
 
+import pandas as pd
+
+import Clean
 import TransformerUNet
 import Train_model
 import torch.optim as optim
@@ -18,7 +21,8 @@ LABEL_URL = ""
 
 
 def clean():
-    labels = os.listdir(LABEL_URL + "/Raw")
+    labels = pd.read_csv(LABEL_URL)
+    labels["rle"] = labels["rle"].apply(Clean.rle2mask)
     data = os.listdir(DATA_URL + "/Raw")
 
 
@@ -67,8 +71,8 @@ def fit_model():
     labels = [label for label in os.listdir(LABEL_URL + "/clean")]
 
     train_transform = A.Compose([
-        A.Resize(img_size),
-        A.Rotate(limit=35, p=1),
+        A.Resize(img_size, img_size),
+        A.Rotate(limit=35, p=.1),
         A.VerticalFlip(p=.2),
         A.HorizontalFlip(p=0.5),
         A.Normalize(
@@ -79,13 +83,24 @@ def fit_model():
         ToTensorV2()
     ])
     val_transform = A.Compose([
-        A.Resize(img_size)
+        A.Resize(img_size, img_size)
     ])
 
     train_X, train_y, test_X, test_y = train_test_split(data, labels, test_size=0.1)
-    train_dataloader = Dataset.ImageDataLoader(train_y, train_X, transforms=train_transform)
-    val_dataloader = Dataset.ImageDataLoader(test_y, test_X, transforms=val_transform)
-
+    train_dataset = Dataset.ImageDataLoader(train_y, train_X, transforms=train_transform)
+    val_dataset = Dataset.ImageDataLoader(test_y, test_X, transforms=val_transform)
+    train_dataloader = torch.utils.data.DataLoader(
+        train_dataset,
+        shuffle=True,
+        batch_size=BATCH_SIZE,
+        num_workers=NUM_WORKERS
+    )
+    val_dataloader = torch.utils.data.DataLoader(
+        val_dataset,
+        shuffle=True,
+        batch_size=BATCH_SIZE * 4,
+        num_workers=NUM_WORKERS * 2
+    )
     Train_model.fit(model, opt, loss_eq, train_dataloader, val_dataloader, epochs)
 
 

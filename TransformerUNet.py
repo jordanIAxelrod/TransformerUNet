@@ -315,6 +315,7 @@ class MultiLayerBlock(nn.Module):
             x = block(x)
         return x
 
+
 class ViT(nn.Module):
     """
     Simplified implementation of the Vision Transformer.
@@ -460,15 +461,12 @@ class Convolutions(nn.Module):
         x = self.relu(x)
         return x
 
-
-class UNetViT(nn.Module):
+class Backbone(nn.Module):
     """
-    Implementation of UNet using transformers instead of CNN
-
     Parameters
     ----------
     img_size : int
-        Bothe height and the width of the image (it is a square).
+        Both height and the width of the image (it is a square).
     patch_size : int
         both height and the width of the patch (it is a square).
     in_chans: int
@@ -489,19 +487,7 @@ class UNetViT(nn.Module):
         Number of layers int he `MLP` module
     p, attn_p : float
         Dropout probability
-
-    Attributes
-    ----------
-    down : nn.ModuleList
-        list of blocks of transformers on the down side of the network
-    up : nn.ModuleList
-        List of blocks of transformers on the up side of the network
-    bottleneck : nn.ModuleList
-        List of blocks of transformers making up the bottle neck
-    skip_cons : list
-        List of tensors of skip connections.
     """
-
     def __init__(
             self,
             img_size: int = 512,
@@ -515,7 +501,7 @@ class UNetViT(nn.Module):
             p: float = 0.,
             attn_p: float = 0.
     ):
-        super(UNetViT, self).__init__()
+        super(Backbone, self).__init__()
         self.n_patches_down = n_patches_down
         self.chan_list = chan_list
         self.n_patches_up = n_patches_up
@@ -567,6 +553,115 @@ class UNetViT(nn.Module):
         )
         self.max_pool = nn.MaxPool2d(2)
 
+        self.bottleneck_dim = img_size // 2 ** 4
+        self.bottleneck_patch_embed = PatchEmbed(
+            img_size=self.bottleneck_dim,
+            patch_size=self.bottleneck_dim // self.n_patches_down ** .5,
+            in_chans=chan_list[-2],
+            embed_dim=self.bottleneck_dim ** 2 * chan_list[-2] // self.n_patches_down
+        )
+        self.bottleneck_pos_embed = nn.Parameter(
+            torch.zeros(1, self.n_patches_down, chan_list[-2] * self.bottleneck_dim ** 2 // self.n_patches_down)
+        )
+        self.bottleneck_conv = Block(
+            dim=self.bottleneck_dim ** 2 * chan_list[-2] // self.n_patches_down,
+            n_heads=chan_list[-2],
+            mlp_ratio=mlp_ratio,
+            qkv_bias=qkv_bias,
+            n_layers=n_layers,
+            p=p,
+            attn_p=attn_p,
+        )
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, list]:
+        skip_connections = []
+
+        # Downward pass
+        for i, block in enumerate(self.down):
+            x = self.down_patch_embed[i](x) + self.pos_emb_down[i]  # (n_samples, n_patches, dim1)
+            x = block(x)  # (n_samples, n_patches, dim1)
+            x = inverse_patch(x, self.chan_list[i])  # (n_samples, n_chans, H, W)
+            x = self.down_conv[i](x)  # (n_samples, n_chans, H, W)
+            skip_connections.append(x)
+            x = self.max_pool(x)  # (n_samples, n_chans, (H - 1) / 2, (W - 1) / 2)
+
+        # Bottleneck
+        x = self.bottleneck_patch_embed(x) + self.bottleneck_pos_embed
+        x = self.bottleneck_conv(x)
+        x = self.inverse_patch(x, self.chan_list[-2])
+        x = self.down_conv[-1](x)
+        return x, skip_connections
+
+
+def inverse_patch(x: torch.Tensor, n_chans) -> torch.Tensor:
+    """
+
+    :param x: torch.Tensor
+        Shape: `(n_samples, n_patches, embed_dim)`
+    :param n_chans: int
+        number of channels
+    :return: torch.Tensor
+        Shape: `(n_samples, 1, H, W)
+    """
+    n_samples, n_patches, embed_dim = x.shape
+    patch_size = int((embed_dim // n_chans) ** .5)
+    x = x.reshape(-1, n_patches, n_chans, patch_size, patch_size)
+    # (n_samples, n_patches, C, H, W)
+    rows = []
+    row_dim = int(n_patches ** .5)
+    for j in range(row_dim):
+        z = x[:, j * row_dim: (j + 1) * row_dim]
+        rows.append(torch.cat(
+            [z[:, k].reshape(n_samples, n_chans, patch_size, patch_size)
+             for k in range(z.shape[1])],
+            dim=2))
+        # (n_samples, n_patches ** .5, c, h, w)
+    x = torch.cat(rows, dim=3)
+    return x
+
+class Decoder(nn.Module):
+    """
+    Parameters
+    ----------
+    img_size : int
+        Both height and the width of the image (it is a square).
+    patch_size : int
+        both height and the width of the patch (it is a square).
+    in_chans: int
+        Number of channels.
+    n_classes : int
+        Number of classes.
+    embed_dim : int
+        Dimensionality of the token/patch embeddings.
+    depth : int
+        Number of blocks.
+    n_heads : int
+        Number of attention heads.
+    mlp_ratio : float
+        Determines the hidden dimension of the `MLP` module
+    qkv_bias : bool
+        If True then we include bias to the query, key and value projections.
+    n_layers : int
+        Number of layers int he `MLP` module
+    p, attn_p : float
+        Dropout probability
+    """
+    def __init__(
+            self,
+            img_size: int = 512,
+            n_patches_up: int = 256,
+            depth: int = 4,
+            chan_list: list = (3, 2, 4, 8, 16, 32),
+            mlp_ratio: float = 4,
+            qkv_bias: bool = True,
+            n_layers: int = 1,
+            p: float = 0.,
+            attn_p: float = 0.
+    ):
+        super(Decoder, self).__init__()
+        self.chan_list = chan_list
+        self.n_patches_up = n_patches_up
+        self.dims = [img_size // 2 ** i for i in range(4)]
         self.pos_emb_up = [
             nn.Parameter(
                 torch.zeros(1, self.n_patches_up, chan_list[len(chan_list) - 1 - i] * dim ** 2 // self.n_patches_up)
@@ -618,52 +713,103 @@ class UNetViT(nn.Module):
                 for i in range(len(chan_list) - 1, 1, -1)
             ]
         )
-        self.bottleneck_dim = img_size // 2 ** 4
-        self.bottleneck_patch_embed = PatchEmbed(
-            img_size=self.bottleneck_dim,
-            patch_size=self.bottleneck_dim // self.n_patches_down ** .5,
-            in_chans=chan_list[-2],
-            embed_dim=self.bottleneck_dim ** 2 * chan_list[-2] // self.n_patches_down
-        )
-        self.bottleneck_pos_embed = nn.Parameter(
-            torch.zeros(1, self.n_patches_down, chan_list[-2] * self.bottleneck_dim ** 2 // self.n_patches_down)
-        )
-        self.bottleneck_conv = Block(
-            dim=self.bottleneck_dim ** 2 * chan_list[-2] // self.n_patches_down,
-            n_heads=chan_list[-2],
+
+    def forward(self, x: torch.Tensor, skip_connections: list) -> torch.Tensor:
+        skip_connections.reverse()
+
+        # Decode
+        for i, skip_connection in enumerate(skip_connections):
+            x = self.convtranspose2d[i](x)
+            x = torch.cat([x, skip_connection], dim=1)  # (n_samples, n_chans * 2, H, W)
+            x = self.up_patch_embed[i](x) + self.pos_emb_up[i]
+            x = self.up[i](x)  # (n_samples, n_patches * 2
+            x = inverse_patch(x, self.chan_list[len(self.chan_list) - 1 - i])
+            x = self.up_conv[i](x)
+        return x
+
+class UNetViT(nn.Module):
+    """
+    Implementation of UNet using transformers instead of CNN
+
+    Parameters
+    ----------
+    img_size : int
+        Both height and the width of the image (it is a square).
+    patch_size : int
+        both height and the width of the patch (it is a square).
+    in_chans: int
+        Number of channels.
+    n_classes : int
+        Number of classes.
+    embed_dim : int
+        Dimensionality of the token/patch embeddings.
+    depth : int
+        Number of blocks.
+    n_heads : int
+        Number of attention heads.
+    mlp_ratio : float
+        Determines the hidden dimension of the `MLP` module
+    qkv_bias : bool
+        If True then we include bias to the query, key and value projections.
+    n_layers : int
+        Number of layers int he `MLP` module
+    p, attn_p : float
+        Dropout probability
+
+    Attributes
+    ----------
+    down : nn.ModuleList
+        list of blocks of transformers on the down side of the network
+    up : nn.ModuleList
+        List of blocks of transformers on the up side of the network
+    bottleneck : nn.ModuleList
+        List of blocks of transformers making up the bottle neck
+    skip_cons : list
+        List of tensors of skip connections.
+    """
+
+    def __init__(
+            self,
+            backbone: Backbone= None,
+            img_size: int = 512,
+            n_patches_down: int = 64,
+            n_patches_up: int = 256,
+            depth: int = 4,
+            chan_list: list = (3, 2, 4, 8, 16, 32),
+            mlp_ratio: float = 4,
+            qkv_bias: bool = True,
+            n_layers: int = 1,
+            p: float = 0.,
+            attn_p: float = 0.
+    ):
+        super(UNetViT, self).__init__()
+        if backbone:
+            self.backbone = backbone
+        else:
+            self.backbone = Backbone(
+                img_size=img_size,
+                n_patches_down=n_patches_down,
+                n_patches_up=n_patches_up,
+                depth=depth,
+                chan_list=chan_list,
+                mlp_ratio=mlp_ratio,
+                qkv_bias=qkv_bias,
+                n_layers=n_layers,
+                p=p,
+                attn_p=attn_p
+            )
+        self.decoder = Decoder(
+            img_size=img_size,
+            n_patches_up=n_patches_up,
+            depth=depth,
+            chan_list=chan_list,
             mlp_ratio=mlp_ratio,
             qkv_bias=qkv_bias,
             n_layers=n_layers,
             p=p,
-            attn_p=attn_p,
+            attn_p=attn_p
         )
         self.last_convolution = nn.Conv2d(chan_list[1], 1, kernel_size=1)
-
-    def inverse_patch(self, x: torch.Tensor, n_chans) -> torch.Tensor:
-        """
-
-        :param x: torch.Tensor
-            Shape: `(n_samples, n_patches, embed_dim)`
-        :param n_chans: int
-            number of channels
-        :return: torch.Tensor
-            Shape: `(n_samples, 1, H, W)
-        """
-        n_samples, n_patches, embed_dim = x.shape
-        patch_size = int((embed_dim // n_chans) ** .5)
-        x = x.reshape(-1, n_patches, n_chans, patch_size, patch_size)
-        # (n_samples, n_patches, C, H, W)
-        rows = []
-        row_dim = int(n_patches ** .5)
-        for j in range(row_dim):
-            z = x[:, j * row_dim: (j + 1) * row_dim]
-            rows.append(torch.cat(
-                [z[:, k].reshape(n_samples, n_chans, patch_size, patch_size)
-                 for k in range(z.shape[1])],
-                dim=2))
-            # (n_samples, n_patches ** .5, c, h, w)
-        x = torch.cat(rows, dim=3)
-        return x
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -673,41 +819,18 @@ class UNetViT(nn.Module):
         :return: torch.Tensor
             Shape: `(n_samples, 1, img_size, img_size)`
         """
-        skip_connections = []
-
-        # Downward pass
-        for i, block in enumerate(self.down):
-            x = self.down_patch_embed[i](x) + self.pos_emb_down[i]  # (n_samples, n_patches, dim1)
-            x = block(x)  # (n_samples, n_patches, dim1)
-            x = self.inverse_patch(x, self.chan_list[i])  # (n_samples, n_chans, H, W)
-            x = self.down_conv[i](x)  # (n_samples, n_chans, H, W)
-            skip_connections.append(x)
-            x = self.max_pool(x)  # (n_samples, n_chans, (H - 1) / 2, (W - 1) / 2)
-
-        # Bottleneck
-        x = self.bottleneck_patch_embed(x) + self.bottleneck_pos_embed
-        x = self.bottleneck_conv(x)
-        x = self.inverse_patch(x, self.chan_list[-2])
-        x = self.down_conv[-1](x)
-        skip_connections.reverse()
-
-        # Decode
-        for i, skip_connection in enumerate(skip_connections):
-            x = self.convtranspose2d[i](x)
-            x = torch.cat([x, skip_connection], dim=1)  # (n_samples, n_chans * 2, H, W)
-            x = self.up_patch_embed[i](x) + self.pos_emb_up[i]
-            x = self.up[i](x)  # (n_samples, n_patches * 2
-            x = self.inverse_patch(x, self.chan_list[len(self.chan_list) - 1 - i])
-            x = self.up_conv[i](x)
+        x, skip_connections = self.backbone(x)
+        x = self.decoder(x, skip_connections)
 
         return self.last_convolution(x)
 
 
-print("Create network")
-net = UNetViT(depth=1)
+if __name__ == "__main__":
+    print("Create network")
+    net = UNetViT(depth=1)
 
-h = torch.randn(1, 3, 512, 512)
-print("Run forward")
-l = net(h)
+    h = torch.randn(1, 3, 512, 512)
+    print("Run forward")
+    l = net(h)
 
-print(l.shape)
+    print(l)
