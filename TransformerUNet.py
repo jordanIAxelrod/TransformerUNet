@@ -533,7 +533,7 @@ class Backbone(nn.Module):
                 MultiLayerBlock(
                     depth=depth,
                     dim=dim ** 2 * chan_list[i] // self.n_patches_down,
-                    n_heads=chan_list[i],
+                    n_heads=chan_list[i] * 2,
                     mlp_ratio=mlp_ratio,
                     qkv_bias=qkv_bias,
                     n_layers=n_layers,
@@ -573,7 +573,7 @@ class Backbone(nn.Module):
             attn_p=attn_p,
         )
 
-    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, list]:
+    def forward(self, x: torch.Tensor) -> tuple:
         skip_connections = []
 
         # Downward pass

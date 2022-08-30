@@ -15,6 +15,8 @@ import CropVolumes
 
 import Dataset
 from sklearn.model_selection import train_test_split
+import segmentation_models_pytorch as smp
+
 
 DATA_URL = ""
 LABEL_URL = ""
@@ -66,24 +68,36 @@ def fit_model():
     else:
         opt = optim.SGD(model.parameters(), lr=.0001)
 
-    loss_eq = loss.BCELoss()
+    loss_eq = smp.losses.DiceLoss(
+        "binary",
+        from_logits=True,
+        log_loss=True
+    )
     data = [data for data in os.listdir(DATA_URL + "/clean")]
     labels = [label for label in os.listdir(LABEL_URL + "/clean")]
 
     train_transform = A.Compose([
-        A.Resize(img_size, img_size),
-        A.Rotate(limit=35, p=.1),
-        A.VerticalFlip(p=.2),
+        A.RandomResizedCrop(height=img_size, width=img_size),
+        A.Rotate(limit=90, p=0.5),
         A.HorizontalFlip(p=0.5),
-        A.Normalize(
-            mean=[0.0, 0.0, 0.0],
-            std=[1.0, 1.0, 1.0],
-            max_pixel_value=255.0
-        ),
+        A.VerticalFlip(p=0.5),
+        A.transforms.ColorJitter(p=0.5),
+        A.OneOf([
+            A.OpticalDistortion(p=0.5),
+            A.GridDistortion(p=.5),
+            A.PiecewiseAffine(p=0.5),
+        ], p=0.5),
+        A.OneOf([
+            A.HueSaturationValue(10, 15, 10),
+            A.CLAHE(clip_limit=4),
+            A.RandomBrightnessContrast(),
+        ], p=0.5),
+        A.Normalize(),
         ToTensorV2()
     ])
     val_transform = A.Compose([
-        A.Resize(img_size, img_size)
+        A.Resize(img_size, img_size),
+        A.Normalize()
     ])
 
     train_X, train_y, test_X, test_y = train_test_split(data, labels, test_size=0.1)

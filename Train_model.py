@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import matplotlib.figure as figure
 
-import tqdm
+from tqdm import tqdm
 import datetime as dt
 import numpy as np
 from Config import *

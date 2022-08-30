@@ -70,7 +70,11 @@ class ImagenetClassification(Dataset):
             usecols=[0, 1]
         )
         self.data_dir = data_dir
-        self.data = os.listdir(data_dir)
+        self.data_syset = os.listdir(data_dir)
+        self.data = []
+        for syset in self.data_syset:
+            for file in os.path.join(self.data_dir, syset):
+                self.data.append(f"{syset}/{file}")
         self.transform = transform
 
     def __len__(self):

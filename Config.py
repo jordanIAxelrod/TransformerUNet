@@ -17,10 +17,10 @@ IMG_DIR = "data/images"
 MSK_DIR = "data/masks"
 NUM_WORKERS = 2
 
-IMG_SIZE = 2048
+IMG_SIZE = 512
 N_PATCHES_DOWN = 64
 N_PATCHES_UP = 256
-DEPTH = 4
+DEPTH = 2
 QKV_BIAS = True
 N_LAYERS = 1
 P = .1
